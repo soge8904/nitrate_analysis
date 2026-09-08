@@ -7,6 +7,10 @@ from typing import Any
 import pandas as pd
 
 
+class ReferenceError(ValueError):
+    """Raised when reference data are missing or malformed."""
+
+
 @dataclass(frozen=True) #frozen keeps from reassigning values to the refs.
 class ReferenceData:
     """Container for fixed thermodynamic reference quantities.
@@ -22,7 +26,7 @@ class ReferenceData:
     def from_excel(
         cls,
         path: str | Path,
-        sheet_name: str = "Reference_summary",
+        sheet_name: str = "ref_summary",
     ) -> "ReferenceData":
         """Load reference values from the workbook summary sheet.
 
@@ -124,6 +128,18 @@ class ReferenceData:
     @property
     def mu_HNO3(self) -> float:
         return self.get("mu_HNO3")
+
+    @property
+    def mu_O2(self) -> float:
+        return self.get("mu_O2")
+
+    @property
+    def mu_N2(self) -> float:
+        return self.get("mu_N2")
+
+    @property
+    def mu_HNO2(self) -> float:
+        return self.get("mu_HNO2")
 
     @property
     def dG_rxn_redox(self) -> float:
