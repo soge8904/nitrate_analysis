@@ -138,7 +138,7 @@ def nitrate_adsorption_dG(
     to nitrate adsorption -- not a general aqueous-adsorption formula.
     Returns ``None`` if any required value is missing, rather than raising.
     """
-    g_bare = energies.get(_norm("*"))
+    g_bare = energies.get("*")
     g_to = energies.get(_norm(to_state))
     mu_e = _mu_e(constants, bias)
     mu_h = constants.get("mu_H+")
@@ -190,28 +190,6 @@ def pcet_dG(
     )
 
 
-def _step_dG(
-    frm: str,
-    to: str,
-    metadata: dict[str, float | str] | None,
-    bias: str,
-    *,
-    energies: dict[str, float],
-    constants: dict[str, float],
-    valence_electrons: dict[str, float],
-) -> float | None:
-    if to.startswith("*") and not frm.startswith("*"):
-        return nitrate_adsorption_dG(
-            to, bias, energies=energies, constants=constants, valence_electrons=valence_electrons
-        )
-    if frm.startswith("*") and to.startswith("*"):
-        return pcet_dG(
-            frm, to, metadata, bias,
-            energies=energies, constants=constants, valence_electrons=valence_electrons,
-        )
-    raise ValueError(f"don't know how to price {frm!r} -> {to!r}")
-
-
 def get_FED(
     metal: str,
     start: str,
@@ -240,23 +218,29 @@ def get_FED(
     path = find_path(graph, start, end)
     graph = _normalize_graph(graph)
 
+    # Insertion order matches path order and find_path never revisits a
+    # state, so this dict doubles as the ordered (state, energy) result --
+    # list(cumulative.items()) at the end needs no separate list alongside it.
     cumulative: dict[str, float | None] = {path[0]: 0.0}
-    result: list[tuple[str, float | None]] = [(path[0], 0.0)]
     for frm, to in zip(path, path[1:]):
         metadata = graph.get((frm, to))
         ref = _norm(metadata["ref"]) if metadata and "ref" in metadata else frm
         ref_value = cumulative.get(ref)
         if ref_value is None:
-            result.append((to, None))
             cumulative[to] = None
             continue
-        step = _step_dG(
-            ref, to, metadata, bias,
-            energies=energies, constants=constants, valence_electrons=valence_electrons,
-        )
-        value = None if step is None else ref_value + step
-        result.append((to, value))
-        cumulative[to] = value
-    return result
+        if to.startswith("*") and not ref.startswith("*"):
+            step = nitrate_adsorption_dG(
+                to, bias, energies=energies, constants=constants, valence_electrons=valence_electrons
+            )
+        elif ref.startswith("*") and to.startswith("*"):
+            step = pcet_dG(
+                ref, to, metadata, bias,
+                energies=energies, constants=constants, valence_electrons=valence_electrons,
+            )
+        else:
+            raise ValueError(f"don't know how to price {ref!r} -> {to!r}")
+        cumulative[to] = None if step is None else ref_value + step
+    return list(cumulative.items())
 
 FED_energies = get_FED("Ag", start="NO3-", end="*NO2", bias="0V")

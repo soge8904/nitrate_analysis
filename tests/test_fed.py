@@ -177,20 +177,12 @@ def test_get_fed_propagates_none_past_a_broken_step():
 
 # -- "ref": graph connectivity vs. a step's energy reference state ---------
 
-def test_get_fed_no2_is_priced_against_no3_not_no3h():
-    # *NO2's edge carries ref="*NO3" in EXAMPLE_GRAPH, so its dG is computed
-    # against *NO3 directly, exactly matching a standalone pcet_dG("*NO3",
-    # "*NO2", ...) call -- it is not built by chaining through *NO3H's dG.
-    result = get_FED("Fe", "NO3-", "*NO2", "0V")
-    dG_ads = nitrate_adsorption_dG("*NO3", "0V")
-    dG_no2 = pcet_dG("*NO3", "*NO2", {"n_h2o": 1, "n_h": 2}, "0V")
-    assert result[-1] == ("*NO2", pytest.approx(dG_ads + dG_no2))
-
-
 def test_get_fed_ref_lets_a_later_state_skip_a_missing_predecessor():
     # *NO3H sits on the path (you must visit it to reach *NO2), but its own
     # energy is missing here. Because *NO2's edge references *NO3 (not
     # *NO3H), *NO2 still resolves to a real number -- only *NO3H shows None.
+    # (This also proves *NO2 is priced against *NO3 directly, not built by
+    # chaining through *NO3H's own dG.)
     energies = dict(EXAMPLE_ENERGIES)
     del energies["*NO3H"]
     result = get_FED("Fe", "NO3-", "*NO2", "0V", energies=energies)
