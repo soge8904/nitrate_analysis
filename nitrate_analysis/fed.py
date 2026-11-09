@@ -147,7 +147,7 @@ def nitrate_adsorption_dG(
     n_no3 = valence_electrons.get("NO3-")
     if None in (g_bare, g_to, mu_e, mu_h, mu_hno3, dg_hno3, n_no3):
         return None
-    return g_to - g_bare - mu_e * (-n_no3) - dg_hno3 + mu_h - mu_hno3
+    return g_to - g_bare - mu_e * (-n_no3) + dg_hno3 + mu_h - mu_hno3
 
 
 def pcet_dG(
