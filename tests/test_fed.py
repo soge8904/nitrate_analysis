@@ -4,13 +4,15 @@ from functools import partial
 
 from example_data import EXAMPLE_CONSTANTS, EXAMPLE_ENERGIES
 from nitrate_analysis import fed
-from nitrate_analysis.fed import NO3RR_GRAPH as EXAMPLE_GRAPH, find_path
+from nitrate_analysis.fed import find_path, find_paths, graph_states
+from nitrate_analysis.network import NO3RR_GRAPH as EXAMPLE_GRAPH
 from nitrate_analysis.valence import valence_electrons
 
-# fed's energies/constants are required; these bind the fake data as defaults
+# fed's graph/energies/constants are required; these bind the test data as defaults
 # (keyword overrides in a test still win).
 _fake = dict(energies=EXAMPLE_ENERGIES, constants=EXAMPLE_CONSTANTS)
-get_FED = partial(fed.get_FED, **_fake)
+get_FED = partial(fed.get_FED, graph=EXAMPLE_GRAPH, **_fake)
+get_FEDs = partial(fed.get_FEDs, graph=EXAMPLE_GRAPH, **_fake)
 nitrate_adsorption_dG = partial(fed.nitrate_adsorption_dG, **_fake)
 pcet_dG = partial(fed.pcet_dG, **_fake)
 
@@ -176,3 +178,39 @@ def test_get_fed_ref_defaults_to_the_literal_predecessor_when_absent():
     result = get_FED("Fe", "*A", "*C", "0V", graph=graph, energies=energies, constants=constants)
     # dG(*A->*C) = G_*C - G_*A - 1*mu_H+ = -8.5 - (-10.0) - (-0.5) = 2.0
     assert result == [("*A", 0.0), ("*B", None), ("*C", pytest.approx(2.0))]
+
+
+# -- branching: the split route NO3- -> *O_NO2 -> *NO2 -----------------------
+
+def test_find_paths_returns_every_route_first_route_unchanged():
+    assert find_paths(EXAMPLE_GRAPH, "NO3-", "*NO2") == [
+        ["NO3-", "*NO3", "*NO3H", "*NO2"],
+        ["NO3-", "*O_NO2", "*NO2"],
+    ]
+    assert find_path(EXAMPLE_GRAPH, "NO3-", "*NO2") == find_paths(EXAMPLE_GRAPH, "NO3-", "*NO2")[0]
+    assert find_paths(EXAMPLE_GRAPH, "*NO3", "*NO3") == [["*NO3"]]
+    with pytest.raises(ValueError):
+        find_paths(EXAMPLE_GRAPH, "*NO2", "NO3-")
+
+
+def test_get_feds_routes_agree_on_the_shared_end_state():
+    energies = {**EXAMPLE_ENERGIES, "*O_NO2": -105.2}
+    intact, split = get_FEDs("Fe", "NO3-", "*NO2", "0V", energies=energies)
+    assert [s for s, _ in intact] == ["NO3-", "*NO3", "*NO3H", "*NO2"]
+    assert [s for s, _ in split] == ["NO3-", "*O_NO2", "*NO2"]
+    # same atoms and same electron/proton/water bookkeeping -> same end energy
+    assert dict(intact)["*NO2"] == pytest.approx(dict(split)["*NO2"])
+    assert dict(split)["*O_NO2"] == pytest.approx(
+        nitrate_adsorption_dG("*O_NO2", "0V", energies=energies))
+
+
+def test_get_fed_is_the_first_route_and_missing_split_energy_only_blanks_that_route():
+    first = get_FEDs("Fe", "NO3-", "*NO2", "0V")[0]
+    assert get_FED("Fe", "NO3-", "*NO2", "0V") == first
+    split = get_FEDs("Fe", "NO3-", "*NO2", "0V")[1]  # no *O_NO2 energy in the fake data
+    assert split[1] == ("*O_NO2", None) and split[2] == ("*NO2", None)
+
+
+def test_graph_states_lists_bare_slab_and_adsorbed_states_only():
+    assert graph_states(EXAMPLE_GRAPH) == ["*", "*NO3", "*O_NO2", "*NO3H", "*NO2"]
+    assert graph_states({("a-", "*b"): None, ("*B", "*c"): None}) == ["*", "*B", "*C"]

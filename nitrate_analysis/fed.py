@@ -42,16 +42,6 @@ from nitrate_analysis.valence import valence_electrons
 
 Graph = dict[tuple[str, str], dict[str, float | str] | None]
 
-# (from_state, to_state) -> per-step (n_h2o, n_h, and optional "ref"), or
-# None for the adsorption-type edge (which needs no per-edge numbers -- see
-# nitrate_adsorption_dG). *NO2 is only reachable through *NO3H (no direct
-# *NO3 -> *NO2 edge), but its dG is still priced against *NO3 via "ref".
-NO3RR_GRAPH: Graph = {
-    ("NO3-", "*NO3"): None,
-    ("*NO3", "*NO3H"): {"n_h2o": 0, "n_h": 1},
-    ("*NO3H", "*NO2"): {"n_h2o": 1, "n_h": 2, "ref": "*NO3"},
-}
-
 def _norm(state: str) -> str:
     """Canonical form for state-string comparisons: caps-agnostic."""
     return state.strip().upper()
@@ -61,32 +51,51 @@ def _normalize_graph(graph: Graph) -> Graph:
     return {(_norm(frm), _norm(to)): meta for (frm, to), meta in graph.items()}
 
 
-def find_path(graph: Graph, start: str, end: str) -> list[str]:
-    """Return the first simple path from ``start`` to ``end`` as a list of
-    states, walking ``graph`` depth-first. State matching is caps-agnostic;
-    returned states are the canonical (uppercased) form. Raises ``ValueError``
-    if no path exists."""
+def graph_states(graph: Graph) -> list[str]:
+    """The states whose energy ``graph`` needs from calculations: the bare
+    slab ``"*"`` plus every adsorbed state (name starting with ``"*"``), in
+    order of first appearance, canonical (uppercased) form. Aqueous states
+    (``"NO3-"``) are priced from references, not calculations, so they are
+    left out."""
+    seen = ["*"]
+    for frm, to in _normalize_graph(graph):
+        for state in (frm, to):
+            if state.startswith("*") and state not in seen:
+                seen.append(state)
+    return seen
+
+
+def find_paths(graph: Graph, start: str, end: str) -> list[list[str]]:
+    """Every simple path from ``start`` to ``end`` as lists of states, in
+    depth-first order of the graph's insertion order. State matching is
+    caps-agnostic; returned states are the canonical (uppercased) form. Raises
+    ``ValueError`` if no path exists."""
     start, end = _norm(start), _norm(end)
     graph = _normalize_graph(graph)
 
     if start == end:
-        return [start]
+        return [[start]]
 
-    def dfs(node: str, visited: set[str]) -> list[str] | None:
+    paths: list[list[str]] = []
+
+    def dfs(path: list[str]) -> None:
         for frm, to in graph:
-            if frm != node or to in visited:
+            if frm != path[-1] or to in path:
                 continue
             if to == end:
-                return [node, to]
-            found = dfs(to, visited | {to})
-            if found is not None:
-                return [node, *found]
-        return None
+                paths.append([*path, to])
+            else:
+                dfs([*path, to])
 
-    path = dfs(start, {start})
-    if path is None:
+    dfs([start])
+    if not paths:
         raise ValueError(f"no path from {start!r} to {end!r} in graph")
-    return path
+    return paths
+
+
+def find_path(graph: Graph, start: str, end: str) -> list[str]:
+    """The first path of :func:`find_paths` (``ValueError`` if none)."""
+    return find_paths(graph, start, end)[0]
 
 
 def _const(constants, name: str) -> float:
@@ -171,36 +180,12 @@ def pcet_dG(
     )
 
 
-def get_FED(
-    metal: str,
-    start: str,
-    end: str,
-    bias: str,
-    *,
-    graph: Graph = NO3RR_GRAPH,
-    energies: dict[str, float],
-    constants,
-) -> list[tuple[str, float | None]]:
-    """Free energy diagram from ``start`` to ``end``: each state on the path
-    paired with its energy relative to ``start`` (0 eV).
-
-    Each step's ``dG`` is priced by :func:`nitrate_adsorption_dG` or
-    :func:`pcet_dG`, then added to the cumulative energy of that edge's
-    *reference* state (its metadata's ``"ref"``, or its own predecessor in
-    the path if there isn't one) -- not necessarily the immediately
-    preceding state. A state missing its own energy shows as ``None``; that
-    only blocks a later state if the later state's edge actually references
-    it -- a state that's merely visited on the way, but not depended on,
-    doesn't poison anything after it.
-
-    ``metal`` is accepted for the target call shape but not yet applied.
-    """
-    path = find_path(graph, start, end)
-    graph = _normalize_graph(graph)
-
-    # Insertion order matches path order and find_path never revisits a
-    # state, so this dict doubles as the ordered (state, energy) result --
-    # list(cumulative.items()) at the end needs no separate list alongside it.
+def _price_path(path: list[str], graph: Graph, bias: str, energies, constants
+                ) -> list[tuple[str, float | None]]:
+    """Price one path (``graph`` already normalized): each state with its
+    energy relative to ``path[0]``."""
+    # Insertion order matches path order and a path never revisits a state,
+    # so this dict doubles as the ordered (state, energy) result.
     cumulative: dict[str, float | None] = {path[0]: 0.0}
     for frm, to in zip(path, path[1:]):
         metadata = graph.get((frm, to))
@@ -223,3 +208,48 @@ def get_FED(
         cumulative[to] = None if step is None else ref_value + step
     return list(cumulative.items())
 
+
+def get_FEDs(
+    metal: str,
+    start: str,
+    end: str,
+    bias: str,
+    *,
+    graph: Graph,
+    energies: dict[str, float],
+    constants,
+) -> list[list[tuple[str, float | None]]]:
+    """One free energy diagram per route from ``start`` to ``end`` (every path
+    of :func:`find_paths`, in that order): each state on the route paired with
+    its energy relative to ``start`` (0 eV).
+
+    Each step's ``dG`` is priced by :func:`nitrate_adsorption_dG` or
+    :func:`pcet_dG`, then added to the cumulative energy of that edge's
+    *reference* state (its metadata's ``"ref"``, or its own predecessor in
+    the path if there isn't one) -- not necessarily the immediately
+    preceding state. A state missing its own energy shows as ``None``; that
+    only blocks a later state if the later state's edge actually references
+    it -- a state that's merely visited on the way, but not depended on,
+    doesn't poison anything after it. Routes that end in the same state agree
+    on its energy (the intermediates cancel).
+
+    ``metal`` is accepted for the target call shape but not yet applied.
+    """
+    paths = find_paths(graph, start, end)
+    graph = _normalize_graph(graph)
+    return [_price_path(p, graph, bias, energies, constants) for p in paths]
+
+
+def get_FED(
+    metal: str,
+    start: str,
+    end: str,
+    bias: str,
+    *,
+    graph: Graph,
+    energies: dict[str, float],
+    constants,
+) -> list[tuple[str, float | None]]:
+    """The first route of :func:`get_FEDs` (see there for how steps are priced)."""
+    path = find_path(graph, start, end)
+    return _price_path(path, _normalize_graph(graph), bias, energies, constants)
