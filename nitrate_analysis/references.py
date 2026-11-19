@@ -7,6 +7,12 @@ from typing import Any
 import pandas as pd
 
 
+# Electron chemical potential (eV) at 0 V vs SHE: the target mu of the JDFTx
+# fixed-potential runs (0V calcs report -4.660 eV, spread ~4e-6; -1 V calcs sit
+# exactly 1 eV higher).
+MU_E0_SHE = -4.66
+
+
 class ReferenceError(ValueError):
     """Raised when reference data are missing or malformed."""
 
@@ -35,12 +41,18 @@ class ReferenceData:
         path:
             Path to the Excel workbook.
         sheet_name:
-            Name of the summary sheet.
+            Name of the machine-readable summary sheet.
 
         Returns
         -------
         ReferenceData
             Reference values and their metadata.
+
+        Notes
+        -----
+        ``pd.read_excel`` reads the cached formula results from Excel, so the
+        workbook must be opened/saved by a recalculating spreadsheet engine
+        after the summary formulas change.
         """
         path = Path(path)
         #error for no file found:
@@ -83,8 +95,10 @@ class ReferenceData:
                 raise ReferenceError(f"Reference {name!r} has no numeric value.")
             try:
                 values[name] = float(value)
-            except (ValueError, TypeError):
-                raise ReferenceError(f"Reference {name!r} has non-numeric value {value!r}.")
+            except (ValueError, TypeError) as exc:
+                raise ReferenceError(
+                    f"Reference {name!r} has non-numeric value {value!r}."
+                ) from exc
 
             metadata[name] = {
                 column: row[column]
@@ -95,7 +109,14 @@ class ReferenceData:
         return cls(values=values, metadata=metadata)
 
     def get(self, name: str) -> float:
-        """Return a reference value by name with a useful error message."""
+        """Return a reference value by name with a useful error message.
+
+        Two names are derived rather than loaded: ``mu_e0`` (``MU_E0_SHE``) and
+        ``mu_H+`` (pH 0, H+ + e-(SHE) <-> 1/2 H2: ``0.5*mu_H2 - mu_e0``)."""
+        if name == "mu_e0":
+            return MU_E0_SHE
+        if name == "mu_H+":
+            return 0.5 * self.mu_H2 - MU_E0_SHE
         try:
             return self.values[name]
         except KeyError as exc:
@@ -108,6 +129,14 @@ class ReferenceData:
     @property
     def mu_H2(self) -> float:
         return self.get("mu_H2")
+
+    @property
+    def mu_e0(self) -> float:
+        return self.get("mu_e0")
+
+    @property
+    def mu_Hplus(self) -> float:
+        return self.get("mu_H+")
 
     @property
     def mu_H2O(self) -> float:

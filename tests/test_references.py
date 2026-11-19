@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
  
-from nitrate_analysis.references import ReferenceData
+from nitrate_analysis.references import ReferenceData, ReferenceError
 
 # tests need to have issues in the loaded excel sheet. Do i make an excel sheet for each issue?
 
@@ -18,7 +18,7 @@ from nitrate_analysis.references import ReferenceData
 # Helper: write a minimal workbook to a temp path so each test can control
 # exactly what "bad" data looks like without touching your real Excel file.
 # ---------------------------------------------------------------------------
-def make_workbook(tmp_path: Path, rows: list[dict], sheet_name: str = "Reference_summary") -> Path:
+def make_workbook(tmp_path: Path, rows: list[dict], sheet_name: str = "ref_summary") -> Path:
     path = tmp_path / "refs.xlsx"
     df = pd.DataFrame(rows)
     df.to_excel(path, sheet_name=sheet_name, index=False)
