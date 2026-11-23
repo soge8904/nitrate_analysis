@@ -15,5 +15,7 @@ EXAMPLE_CONSTANTS: dict[str, float] = {
     "mu_H+": -0.5,
     "mu_H2O": -14.0,
     "mu_HNO3": -18.0,
+    "mu_NO3_H": -17.0,  # chemical potential of the (NO3- + H+) pair
+    "mu_NO2_H": -12.0,  # chemical potential of the (NO2- + H+) pair
     "dG_rxn_redox": 0.3,  # NO3-(aq) + H+(aq) -> HNO3(g)
 }

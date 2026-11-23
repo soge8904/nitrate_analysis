@@ -7,8 +7,9 @@ network is a graph of which states can follow which. Two different equations
 price a step, chosen by whether the state names start with ``"*"``
 (adsorbed) or not (aqueous):
 
-* aqueous -> adsorbed (currently only ``"NO3-" -> "*NO3"``): the nitrate
-  adsorption step, priced by :func:`nitrate_adsorption_dG`.
+* aqueous -> adsorbed (e.g. ``"NO3-" -> "*NO3"``) and adsorbed -> aqueous
+  (e.g. ``"*NO2" -> "NO2-"``): ion adsorption / desorption, priced by
+  :func:`ion_adsorption_dG` (the aqueous state names the ion).
 * adsorbed -> adsorbed (e.g. ``"*NO3" -> "*NO3H"``): a proton/water step,
   priced by :func:`pcet_dG` using a per-edge hardcoded ``(n_h2o, n_h)`` --
   how many waters and protons are transferred relative to the earlier state.
@@ -30,7 +31,7 @@ own energy only blocks whatever actually depends on it, not everything
 physically downstream.
 
 ``energies`` (per-state G, eV) and ``constants`` (a ``ReferenceData`` or a dict
-with the workbook's names: ``mu_e0``, ``mu_H+``, ``mu_H2O``, ``mu_HNO3``,
+with the workbook's names: ``mu_e0``, ``mu_H+``, ``mu_H2O``, ``mu_HNO3``, ``mu_NO3_H``, ``mu_NO2_H``,
 ``dG_rxn_redox``) are required arguments: there are no defaults, so fake
 numbers can't leak into a real result. Valence-electron counts come from
 :mod:`nitrate_analysis.valence`.
@@ -116,14 +117,16 @@ def _mu_e(constants, bias: str) -> float:
     return _const(constants, "mu_e0") - _parse_bias(bias)
 
 
-def nitrate_adsorption_dG(
+def nitrate_adsorption_dG_cycle(
     to_state: str,
     bias: str,
     *,
     energies: dict[str, float],
     constants,
 ) -> float | None:
-    """``NO3-(aq) + * -> to_state + e-``:
+    """Superseded by :func:`nitrate_adsorption_dG`; kept for reference, unused.
+
+    ``NO3-(aq) + * -> to_state + e-``:
     ``dG = G_to - G_* - mu_e*(-N_NO3-) + dG_rxn_redox + mu_H+ - mu_HNO3``, where
     ``N_NO3-`` is nitrate's tabulated valence electron count (24). Specific
     to nitrate adsorption -- not a general aqueous-adsorption formula.
@@ -139,6 +142,54 @@ def nitrate_adsorption_dG(
     if None in (g_bare, g_to):
         return None
     return g_to - g_bare - mu_e * (-n_no3) + dg_hno3 + mu_h - mu_hno3
+
+def ion_adsorption_dG(
+    ion: str,
+    surface_state: str,
+    bias: str,
+    *,
+    energies: dict[str, float],
+    constants,
+    desorption: bool = False,
+) -> float | None:
+    """Adsorption of an aqueous anion onto the slab, or the reverse.
+
+    Adsorption (default): ``ion(aq) + * -> surface_state + e-``:
+    ``dG = G_surf - G_* - mu_e*(-N_ion) - mu_ion_H+ + mu_H+``, where ``N_ion``
+    is the ion's valence electron count (``valence_electrons(ion)``) and
+    ``mu_<ion>_H`` is the workbook's chemical potential of the (ion + H+) pair,
+    named ``mu_<formula>_H`` with the charge dropped (``mu_NO3_H``, ``mu_NO2_H``).
+
+    ``desorption=True`` is the reverse step, ``surface_state + e- -> ion(aq) +
+    *``: exactly ``-dG`` of the adsorption.
+
+    Returns ``None`` if an energy is missing, rather than raising; a missing
+    *constant* raises (see the module docstring).
+    """
+    ion = _norm(ion)
+    g_bare = energies.get("*")
+    g_surf = energies.get(_norm(surface_state))
+    mu_e = _mu_e(constants, bias)
+    mu_h = _const(constants, "mu_H+")
+    mu_pair = _const(constants, f"mu_{ion.removesuffix('-')}_H")
+    n_ion = valence_electrons(ion)
+    if None in (g_bare, g_surf):
+        return None
+    dG = g_surf - g_bare - mu_e * (-n_ion) - mu_pair + mu_h
+    return -dG if desorption else dG
+
+
+def nitrate_adsorption_dG(
+    to_state: str,
+    bias: str,
+    *,
+    energies: dict[str, float],
+    constants,
+) -> float | None:
+    """``NO3-(aq) + * -> to_state + e-``: :func:`ion_adsorption_dG` for NO3-."""
+    return ion_adsorption_dG(
+        "NO3-", to_state, bias, energies=energies, constants=constants
+    )
 
 
 def pcet_dG(
@@ -195,8 +246,13 @@ def _price_path(path: list[str], graph: Graph, bias: str, energies, constants
             cumulative[to] = None
             continue
         if to.startswith("*") and not ref.startswith("*"):
-            step = nitrate_adsorption_dG(
-                to, bias, energies=energies, constants=constants
+            step = ion_adsorption_dG(
+                ref, to, bias, energies=energies, constants=constants
+            )
+        elif ref.startswith("*") and not to.startswith("*"):
+            step = ion_adsorption_dG(
+                to, ref, bias, energies=energies, constants=constants,
+                desorption=True,
             )
         elif ref.startswith("*") and to.startswith("*"):
             step = pcet_dG(
@@ -223,7 +279,7 @@ def get_FEDs(
     of :func:`find_paths`, in that order): each state on the route paired with
     its energy relative to ``start`` (0 eV).
 
-    Each step's ``dG`` is priced by :func:`nitrate_adsorption_dG` or
+    Each step's ``dG`` is priced by :func:`ion_adsorption_dG` or
     :func:`pcet_dG`, then added to the cumulative energy of that edge's
     *reference* state (its metadata's ``"ref"``, or its own predecessor in
     the path if there isn't one) -- not necessarily the immediately

@@ -171,6 +171,14 @@ class ReferenceData:
         return self.get("mu_HNO2")
 
     @property
+    def mu_NO3n_Hp(self) -> float:
+        return self.get("mu_NO3_H")
+
+    @property
+    def mu_NO2n_Hp(self) -> float:
+        return self.get("mu_NO2_H")
+
+    @property
     def dG_rxn_redox(self) -> float:
         return self.get("dG_rxn_redox")
 

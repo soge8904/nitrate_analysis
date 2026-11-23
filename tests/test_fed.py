@@ -14,6 +14,8 @@ _fake = dict(energies=EXAMPLE_ENERGIES, constants=EXAMPLE_CONSTANTS)
 get_FED = partial(fed.get_FED, graph=EXAMPLE_GRAPH, **_fake)
 get_FEDs = partial(fed.get_FEDs, graph=EXAMPLE_GRAPH, **_fake)
 nitrate_adsorption_dG = partial(fed.nitrate_adsorption_dG, **_fake)
+ion_adsorption_dG = partial(fed.ion_adsorption_dG, **_fake)
+nitrate_adsorption_dG_cycle = partial(fed.nitrate_adsorption_dG_cycle, **_fake)
 pcet_dG = partial(fed.pcet_dG, **_fake)
 
 
@@ -53,7 +55,74 @@ def test_find_path_requires_passing_through_no3h_to_reach_no2():
 # -- nitrate_adsorption_dG: NO3-(aq) + * -> *NO3 + e- ----------------------
 
 def test_nitrate_adsorption_dG_matches_formula():
-    # dG = G_*NO3 - G_* - mu_e*(-N_NO3-) + dG_rxn_redox + mu_H+ - mu_HNO3
+    # dG = G_*NO3 - G_* - mu_e*(-N_NO3-) - mu_NO3_H + mu_H+
+    n_no3 = valence_electrons("NO3-")
+    expected = (
+        EXAMPLE_ENERGIES["*NO3"]
+        - EXAMPLE_ENERGIES["*"]
+        - EXAMPLE_CONSTANTS["mu_e0"] * (-n_no3)
+        - EXAMPLE_CONSTANTS["mu_NO3_H"]
+        + EXAMPLE_CONSTANTS["mu_H+"]
+    )
+    assert nitrate_adsorption_dG("*NO3", "0V") == pytest.approx(expected)
+
+
+def test_nitrate_adsorption_dG_does_not_need_dG_rxn_redox():
+    constants = {k: v for k, v in EXAMPLE_CONSTANTS.items() if k != "dG_rxn_redox"}
+    assert nitrate_adsorption_dG("*NO3", "0V", constants=constants) == pytest.approx(
+        nitrate_adsorption_dG("*NO3", "0V")
+    )
+
+
+# -- ion_adsorption_dG: generalized adsorption / desorption ----------------
+
+def test_ion_adsorption_dG_no3_matches_nitrate_adsorption_dG():
+    assert ion_adsorption_dG("NO3-", "*NO3", "0V") == pytest.approx(
+        nitrate_adsorption_dG("*NO3", "0V")
+    )
+
+
+def test_ion_adsorption_dG_no2_matches_formula():
+    # dG = G_*NO2 - G_* - mu_e*(-N_NO2-) - mu_NO2_H + mu_H+
+    n_no2 = valence_electrons("NO2-")
+    expected = (
+        EXAMPLE_ENERGIES["*NO2"]
+        - EXAMPLE_ENERGIES["*"]
+        - EXAMPLE_CONSTANTS["mu_e0"] * (-n_no2)
+        - EXAMPLE_CONSTANTS["mu_NO2_H"]
+        + EXAMPLE_CONSTANTS["mu_H+"]
+    )
+    assert ion_adsorption_dG("NO2-", "*NO2", "0V") == pytest.approx(expected)
+
+
+def test_ion_desorption_is_negative_of_adsorption():
+    ads = ion_adsorption_dG("NO2-", "*NO2", "-0.5V")
+    des = ion_adsorption_dG("NO2-", "*NO2", "-0.5V", desorption=True)
+    assert des == pytest.approx(-ads)
+
+
+def test_ion_adsorption_dG_none_when_energy_missing():
+    assert ion_adsorption_dG("NO2-", "*NO2", "0V", energies={"*": -100.0}) is None
+
+
+def test_ion_adsorption_dG_missing_constant_raises():
+    constants = {k: v for k, v in EXAMPLE_CONSTANTS.items() if k != "mu_NO2_H"}
+    with pytest.raises(KeyError):
+        ion_adsorption_dG("NO2-", "*NO2", "0V", constants=constants)
+
+
+def test_get_FED_prices_desorption_edge():
+    graph = {**EXAMPLE_GRAPH, ("*NO2", "NO2-"): None}
+    fed_ = get_FED("Fe", "*NO2", "NO2-", "0V", graph=graph)
+    assert fed_ == [
+        ("*NO2", 0.0),
+        ("NO2-", pytest.approx(
+            ion_adsorption_dG("NO2-", "*NO2", "0V", desorption=True))),
+    ]
+
+
+def test_nitrate_adsorption_dG_cycle_matches_old_formula():
+    # Superseded variant (unused): uses mu_HNO3 and dG_rxn_redox.
     n_no3 = valence_electrons("NO3-")
     expected = (
         EXAMPLE_ENERGIES["*NO3"]
@@ -63,7 +132,7 @@ def test_nitrate_adsorption_dG_matches_formula():
         + EXAMPLE_CONSTANTS["mu_H+"]
         - EXAMPLE_CONSTANTS["mu_HNO3"]
     )
-    assert nitrate_adsorption_dG("*NO3", "0V") == pytest.approx(expected)
+    assert nitrate_adsorption_dG_cycle("*NO3", "0V") == pytest.approx(expected)
 
 
 def test_nitrate_adsorption_dG_varies_with_bias():
@@ -117,7 +186,7 @@ def test_get_fed_is_caps_agnostic():
 def test_get_fed_uses_injected_graph_energies_and_constants():
     graph = {("*X", "*Y"): {"n_h2o": 0, "n_h": 1}}
     energies = {"*X": -10.0, "*Y": -11.5}
-    constants = {"mu_e0": -4.0, "mu_H+": -0.5, "mu_H2O": -14.0, "mu_HNO3": -18.0, "dG_rxn_redox": 0.3}
+    constants = {"mu_e0": -4.0, "mu_H+": -0.5, "mu_H2O": -14.0, "mu_HNO3": -18.0, "mu_NO3_H": -17.0, "mu_NO2_H": -12.0, "dG_rxn_redox": 0.3}
     result = get_FED(
         "Fe", "*X", "*Y", "0V", graph=graph, energies=energies, constants=constants
     )
@@ -174,7 +243,7 @@ def test_get_fed_ref_defaults_to_the_literal_predecessor_when_absent():
     # prefix so _step_dG dispatches them as adsorbed -> adsorbed steps.)
     graph = {("*A", "*B"): {"n_h2o": 0, "n_h": 1}, ("*B", "*C"): {"n_h2o": 0, "n_h": 1, "ref": "*A"}}
     energies = {"*A": -10.0, "*C": -8.5}  # *B deliberately has no energy
-    constants = {"mu_e0": -4.0, "mu_H+": -0.5, "mu_H2O": -14.0, "mu_HNO3": -18.0, "dG_rxn_redox": 0.3}
+    constants = {"mu_e0": -4.0, "mu_H+": -0.5, "mu_H2O": -14.0, "mu_HNO3": -18.0, "mu_NO3_H": -17.0, "mu_NO2_H": -12.0, "dG_rxn_redox": 0.3}
     result = get_FED("Fe", "*A", "*C", "0V", graph=graph, energies=energies, constants=constants)
     # dG(*A->*C) = G_*C - G_*A - 1*mu_H+ = -8.5 - (-10.0) - (-0.5) = 2.0
     assert result == [("*A", 0.0), ("*B", None), ("*C", pytest.approx(2.0))]
